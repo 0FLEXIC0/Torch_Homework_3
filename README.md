@@ -1,306 +1,11 @@
 # Задание 1: Эксперименты с глубиной сети (30 баллов)
 ## 1.1 Сравнение моделей разной глубины (15 баллов)
-## Коды файлов
-
-experiment_utils.py
-```python
-import random
-import numpy as np
-import torch
-from torch.utils.data import Dataset
-
-def set_seed(seed=42):
-    """
-    Фиксирует seed для воспроизводимости экспериментов.
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-def make_classification_data(n=1000, num_features=2, num_classes=2, seed=42, source='random'):
-    """
-    Генерирует синтетические данные для классификации.
-    """
-    np.random.seed(seed)
-    if source == 'random':
-        X = np.random.randn(n, num_features)
-        w = np.random.randn(num_features, num_classes)
-        logits = X @ w + np.random.randn(n, num_classes) * 0.5
-        y = np.argmax(logits, axis=1)
-        return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
-    else:
-        raise ValueError("Unknown source")
-
-class ClassificationDataset(Dataset):
-    """
-    PyTorch Dataset для задачи классификации.
-    """
-    def __init__(self, X, y):
-        self.X = X
-        self.y = y
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-
-```
-
-visualization_utils.py
-```python
-import matplotlib.pyplot as plt
-
-def plot_learning_curves(train_losses, test_losses, train_accs, test_accs, title, save_path):
-    """
-    Строит и сохраняет графики потерь и точности.
-    """
-    epochs = range(1, len(train_losses) + 1)
-    plt.figure(figsize=(12, 5))
-
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, train_losses, label="Train Loss")
-    plt.plot(epochs, test_losses, label="Test Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Loss Curve")
-    plt.legend()
-
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, train_accs, label="Train Acc")
-    plt.plot(epochs, test_accs, label="Test Acc")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Accuracy Curve")
-    plt.legend()
-
-    plt.suptitle(title)
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-
-```
-
-model_utils.py
-```python
-import torch
-
-def accuracy_score(y_true, y_pred):
-    """
-    Вычисляет точность классификации (accuracy).
-    """
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.cpu().numpy()
-    return (y_true == y_pred).mean()
-```
-
-Создайте файл homework_depth_experiments.py:
 Создайте и обучите модели с различным количеством слоев:
 - 1 слой (линейный классификатор)
 - 2 слоя (1 скрытый)
 - 3 слоя (2 скрытых)
 - 5 слоев (4 скрытых)
 - 7 слоев (6 скрытых)
-
-файл homework_depth_experiments.py
-```python
-import os
-import time
-import logging
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-from utils.visualization_utils import plot_learning_curves
-from utils.model_utils import accuracy_score
-from utils.experiment_utils import make_classification_data, ClassificationDataset, set_seed
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-
-RESULTS_DIR = "Homework_3/results/depth_experiments"
-PLOTS_DIR = "Homework_3/plots"
-
-def get_device():
-    """Определяет доступное устройство."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class MLP(nn.Module):
-    """
-    Многослойный перцептрон с произвольным количеством скрытых слоёв.
-    """
-    def __init__(self, in_features, out_features, hidden_sizes):
-        super().__init__()
-        layers = []
-        last_size = in_features
-        for hidden in hidden_sizes:
-            layers.append(nn.Linear(last_size, hidden))
-            layers.append(nn.ReLU())
-            last_size = hidden
-        layers.append(nn.Linear(last_size, out_features))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-def train_model(model, train_loader, test_loader, criterion, optimizer, device, epochs=30):
-    """
-    Обучает модель и возвращает историю потерь и точности.
-    """
-    train_losses, test_losses = [], []
-    train_accs, test_accs = [], []
-    epoch_times = []
-
-    for epoch in range(1, epochs + 1):
-        model.train()
-        t0 = time.time()
-        running_loss, correct, total = 0.0, 0, 0
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device).view(-1).long()
-            optimizer.zero_grad()
-            logits = model(X_batch)
-            loss = criterion(logits, y_batch)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * X_batch.size(0)
-            preds = torch.argmax(logits, dim=1)
-            correct += (preds == y_batch).sum().item()
-            total += X_batch.size(0)
-        train_loss = running_loss / total
-        train_acc = correct / total
-
-        # Оценка на тесте
-        model.eval()
-        test_loss, test_correct, test_total = 0.0, 0, 0
-        with torch.no_grad():
-            for X_batch, y_batch in test_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device).view(-1).long()
-                logits = model(X_batch)
-                loss = criterion(logits, y_batch)
-                test_loss += loss.item() * X_batch.size(0)
-                preds = torch.argmax(logits, dim=1)
-                test_correct += (preds == y_batch).sum().item()
-                test_total += X_batch.size(0)
-        test_loss /= test_total
-        test_acc = test_correct / test_total
-
-        train_losses.append(train_loss)
-        test_losses.append(test_loss)
-        train_accs.append(train_acc)
-        test_accs.append(test_acc)
-        epoch_time = time.time() - t0
-        epoch_times.append(epoch_time)
-
-        logging.info(f"Epoch {epoch:02d}: "
-                     f"Train Loss={train_loss:.4f}, Test Loss={test_loss:.4f}, "
-                     f"Train Acc={train_acc:.4f}, Test Acc={test_acc:.4f}, "
-                     f"Time={epoch_time:.2f}s")
-    return {
-        "train_losses": train_losses,
-        "test_losses": test_losses,
-        "train_accs": train_accs,
-        "test_accs": test_accs,
-        "epoch_times": epoch_times
-    }
-
-def run_depth_experiment(hidden_layers_list, input_dim, num_classes, epochs=30, batch_size=64, seed=42):
-    """
-    Запускает серию экспериментов с разной глубиной сети.
-    """
-    set_seed(seed)
-    device = get_device()
-    logging.info(f"Используемое устройство: {device}")
-
-    # Генерация данных
-    X, y = make_classification_data(n=1000, source='random')
-    dataset = ClassificationDataset(X, y)
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=torch.Generator().manual_seed(seed))
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    all_histories = {}
-    all_times = {}
-
-    for hidden_sizes in hidden_layers_list:
-        model_name = f"{len(hidden_sizes)+1}_layers"
-        logging.info(f"==== Обучение модели: {model_name} ====")
-        model = MLP(input_dim, num_classes, hidden_sizes).to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.01)
-        history = train_model(model, train_loader, test_loader, criterion, optimizer, device, epochs)
-        all_histories[model_name] = history
-        all_times[model_name] = sum(history["epoch_times"])
-
-        # Сохраняем результаты
-        np.savez(os.path.join(RESULTS_DIR, f"{model_name}_history.npz"), **history)
-        print(f"Сохранено: {os.path.join(RESULTS_DIR, f'{model_name}_history.npz')}")
-        # Визуализация кривых обучения
-        plot_learning_curves(
-            history["train_losses"], history["test_losses"],
-            history["train_accs"], history["test_accs"],
-            title=f"Learning Curves ({model_name})",
-            save_path=os.path.join(PLOTS_DIR, f"{model_name}_curves.png")
-        )
-        print(f"График сохранён: {os.path.join(PLOTS_DIR, f'{model_name}_curves.png')}")
-
-    # Сравнение времени обучения
-    logging.info("==== Время обучения (сек) для каждой модели ====")
-    for model_name, t in all_times.items():
-        logging.info(f"{model_name}: {t:.2f} сек")
-
-    return all_histories, all_times
-
-def test_mlp():
-    """
-    Тест: проверка корректности MLP на простом примере.
-    """
-    model = MLP(in_features=4, out_features=3, hidden_sizes=[5, 5])
-    x = torch.randn(2, 4)
-    out = model(x)
-    assert out.shape == (2, 3), "Ошибка в размере выхода MLP"
-    print("Unit-тест MLP: OK")
-
-if __name__ == "__main__":
-    # Тестирование MLP
-    test_mlp()
-
-    # Запуск эксперимента по глубине
-    hidden_layers_list = [
-        [],          # 1 слой (линейный)
-        [64],        # 2 слоя (1 скрытый)
-        [64, 64],    # 3 слоя (2 скрытых)
-        [64, 64, 64, 64],  # 5 слоев (4 скрытых)
-        [64, 64, 64, 64, 64, 64]  # 7 слоев (6 скрытых)
-    ]
-    input_dim = 2
-    num_classes = 2
-
-    histories, times = run_depth_experiment(
-        hidden_layers_list,
-        input_dim=input_dim,
-        num_classes=num_classes,
-        epochs=30,
-        batch_size=64,
-        seed=42
-    )
-
-    # Анализ результатов
-    print("\n=== Итоговое сравнение точности и времени ===")
-    for model_name in histories:
-        train_acc = histories[model_name]["train_accs"][-1]
-        test_acc = histories[model_name]["test_accs"][-1]
-        total_time = times[model_name]
-        print(f"{model_name}: Train Acc={train_acc:.4f}, Test Acc={test_acc:.4f}, Time={total_time:.2f}s")
-```
-
 Для каждого варианта:
 - Сравните точность на train и test
 ```
@@ -345,17 +50,26 @@ if __name__ == "__main__":
 Для малых и средних глубин (1–3 слоя) время почти одинаково, но начиная с 5 слоёв рост становится заметным.
 
 ## 1.2 Анализ переобучения (15 баллов)
-Новый код файла homework_depth_experiments.py
-```python
-
-```
-## Исследуйте влияние глубины на переобучение:
+- Исследуйте влияние глубины на переобучение:
 С увеличением глубины сети разрыв между train и test accuracy немного увеличивается (например, для 7 слоёв доходит до 0.029), но всё равно остаётся небольшим.\
 Явного переобучения не наблюдается ни для одной конфигурации: нет резкого роста train accuracy при стагнации или падении test accuracy.\
 BatchNorm и Dropout дополнительно стабилизируют обучение: для глубоких моделей с ними разрыв даже меньше, чем без них.
-## - Постройте графики train/test accuracy по эпохам
-Предоставлены выше
-## - Определите оптимальную глубину для каждого датасета
+- Постройте графики train/test accuracy по эпохам
+**1 слой с BN и DO:**
+![1 слой](plots/1_layers_BN_DO_curves.png)
+
+**2 слоя с BN и DO:**
+![2 слоя](plots/2_layers_BN_DO_curves.png)
+
+**3 слоя с BN и DO:**
+![3 слоя](plots/3_layers_BN_DO_curves.png)
+
+**5 слоев с BN и DO:**
+![5 слоев](plots/5_layers_BN_DO_curves.png)
+
+**7 слоев с BN и DO:**
+![7 слоев](plots/7_layers_BN_DO_curves.png)
+- Определите оптимальную глубину для каждого датасета
 ```
 === Определение оптимальной глубины (без BN/DO) ===
 
@@ -365,7 +79,7 @@ BatchNorm и Dropout дополнительно стабилизируют об�
 
 Оптимальная глубина: слоёв: 1 (модель: 1_layers_BN_DO, test accuracy: 0.7900)
 ```
-## - Добавьте Dropout и BatchNorm, сравните результаты
+- Добавьте Dropout и BatchNorm, сравните результаты
 ```
 === Итоговое сравнение точности и времени для всех моделей ===
 1_layers:       Train Acc=0.7775, Test Acc=0.7900, Time=0.79s
@@ -379,7 +93,7 @@ BatchNorm и Dropout дополнительно стабилизируют об�
 7_layers:       Train Acc=0.7788, Test Acc=0.7500, Time=1.18s
 7_layers_BN_DO: Train Acc=0.7638, Test Acc=0.7950, Time=1.76s
 ```
-## - Проанализируйте, когда начинается переобучение
+- Проанализируйте, когда начинается переобучение
 ```
 1_layers: максимальный разрыв train/test acc = -0.001 на эпохе 4
   Явного переобучения не обнаружено.
@@ -405,3 +119,110 @@ BatchNorm и Dropout дополнительно стабилизируют об�
 В экспериментах порог явного переобучения (разрыв > 0.05–0.1) не достигнут ни на одной эпохе.\
 Максимальные разрывы наблюдаются на последних эпохах (например, 29–30 эпоха для 5–7 слоёв), но они всё равно малы.\
 Это говорит о том, что датасет либо достаточно простой для моделей такой сложности, либо объём данных достаточен, чтобы избежать переобучения даже для глубоких сетей.
+
+# Задание 2: Эксперименты с шириной сети (25 баллов)
+## 2.1 Сравнение моделей разной ширины (15 баллов)
+Создайте модели с различной шириной слоев:
+- Узкие слои: [64, 32, 16]
+- Средние слои: [256, 128, 64]
+- Широкие слои: [1024, 512, 256]
+- Очень широкие слои: [2048, 1024, 512]
+Для каждого варианта:
+- Поддерживайте одинаковую глубину (3 слоя)
+Выполняется 👍
+- Сравните точность и время обучения
+```
+=== Итоговое сравнение точности, времени и числа параметров ===
+widths_64_32_16:      Train Acc=0.7825, Test Acc=0.7850, Time=1.10s, Params=2834
+widths_256_128_64:    Train Acc=0.7825, Test Acc=0.7850, Time=1.29s, Params=42050
+widths_1024_512_256:  Train Acc=0.7863, Test Acc=0.7900, Time=0.93s, Params=659714
+widths_2048_1024_512: Train Acc=0.7688, Test Acc=0.7750, Time=1.07s, Params=2630146
+```
+Точность на train и test практически одинакова для всех моделей (разница не превышает 1.5%).\
+Время обучения не растёт строго с увеличением числа параметров.
+- Проанализируйте количество параметров
+Рост числа параметров почти не влияет на качество на этом датасете: test accuracy остаётся на одном уровне или даже слегка падает для самой широкой модели.\
+Слишком широкая сеть (2048_1024_512) показывает даже чуть худшую точность на тесте, чем более компактные варианты — это может быть связано с переобучением или с тем, что задача слишком простая для такой модели.
+## 2.2 Оптимизация архитектуры (10 баллов)
+Найдите оптимальную архитектуру:
+- Используйте grid search для поиска лучшей комбинации
+Использовал 👍
+- Попробуйте различные схемы изменения ширины (расширение, сужение, постоянная)
+Попробовал 👍\
+```
+2025-07-04 06:59:37,635 [INFO] Оптимальная архитектура: схема=Расширение, ширины слоёв=[16, 40, 64], test accuracy=0.7950
+```
+- Визуализируйте результаты в виде heatmap
+**Постоянная:**
+![Постоянная схема](plots/heatmap_const.png)
+
+**Расширение:**
+![Схема расширение](plots/heatmap_expand.png)
+
+**Сужение:**
+![Схема сужение](plots/heatmap_shrink.png)
+
+# Задание 3: Эксперименты с регуляризацией (25 баллов)
+## 3.1 Сравнение техник регуляризации (15 баллов)
+Исследуйте различные техники регуляризации:
+- Без регуляризации
+- Только Dropout (разные коэффициенты: 0.1, 0.3, 0.5)
+- Только BatchNorm
+- Dropout + BatchNorm
+- L2 регуляризация (weight decay)
+Для каждого варианта:
+- Используйте одинаковую архитектуру
+Выполняется 👍
+- Сравните финальную точность
+![Таблица](plots/regularization_comparison.png)
+В данном эксперименте ни одна из техник регуляризации не улучшила итоговую точность по сравнению с отсутствием регуляризации. Это может говорить о том, что модель и/или данные не склонны к сильному переобучению.
+- Проанализируйте стабильность обучения
+- Dropout 0.1–0.3 — лучший компромисс между точностью и стабильностью: почти не уступает по финальной точности, но делает обучение более предсказуемым и устойчивым.
+- BatchNorm и L2 в этой задаче не дают выигрыша ни по точности, ни по стабильности.
+- Сильная регуляризация (Dropout 0.5, L2) может быть избыточной для данной архитектуры и объёма данных.
+
+Без регуляризации — максимальная точность, но чуть менее устойчивая динамика метрики.
+- Визуализируйте распределение весов
+**Без регуляризации:**
+![Без регуляризации](plots/weights_No_Regularization.png)
+
+**Dropout 0.1:**
+![Dropout 0.1](plots/weights_Dropout_0.1.png)
+
+**Dropout 0.3:**
+![Dropout 0.3](plots/weights_Dropout_0.3.png)
+
+**Dropout 0.5:**
+![Dropout 0.5](plots/weights_Dropout_0.5.png)
+
+**BathNorm:**
+![BathNorm](plots/weights_BatchNorm.png)
+
+**Dropout 0.3 + BatchNorm:**
+![Dropout + BatchNorm](plots/weights_Dropout_0.3_+_BatchNorm.png)
+
+**L2 регуляризация:**
+![L2 регуляризация](plots/weights_L2_(1e-3).png)
+
+## 3.2 Адаптивная регуляризация (10 баллов)
+Реализуйте адаптивные техники:
+- Dropout с изменяющимся коэффициентом
+Реализовал 👍
+- BatchNorm с различными momentum
+Реализовал 👍
+- Комбинирование нескольких техник
+Реализовал 👍
+- Анализ влияния на разные слои сети
+Сравнение техник регуляризации:
+```
+Config                                          Final Test Accuracy     Stability (std last 5)      
+----------------------------------------------------------------------------------------------
+Adaptive Dropout (linear decay)                       0.7950                  0.008602
+Adaptive Dropout (exp decay)                          0.7900                  0.005099
+BatchNorm (momentum 0.05 or 0.1 or 0.2)               0.7900                  0.009695
+Adaptive Dropout (linear) + BatchNorm (diff momentum) 0.7800                  0.005099
+```
+- Адаптивный Dropout с линейным уменьшением обеспечивает наилучший баланс между точностью и контролем за переобучением, особенно в глубоких слоях.
+- BatchNorm хорошо стабилизирует обучение, но не всегда даёт прирост точности по сравнению с Dropout.
+- Комбинация техник не всегда эффективна для простых MLP: может привести к избыточной регуляризации и снижению качества.
+- Распределения весов показывают, что все техники успешно предотвращают появление экстремальных значений, но Dropout делает веса более "разреженными", а BatchNorm — более "собранными".
